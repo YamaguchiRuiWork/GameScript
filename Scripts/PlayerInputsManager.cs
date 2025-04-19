@@ -11,8 +11,10 @@ namespace GameScript.Scripts
 		public bool jump;
 		public bool sprint;
 		public bool attack;
+		public bool dodge;
 		public bool guard;
 		public bool noncombat;
+		public bool combat;
 
 		[Header("Movement Settings")]
 		public bool analogMovement;
@@ -55,9 +57,19 @@ namespace GameScript.Scripts
 			GuardInput(value.isPressed);
 		}
 
+		public void OnCombat(InputValue value)
+		{
+			CombatInput(value.isPressed);
+		}
+
 		public void OnNonCombat(InputValue value)
 		{
 			NonCombatInput(value.isPressed);
+		}
+
+		public void OnDodge(InputValue value)
+		{
+			DodgeInput(value.isPressed);
 		}
 #endif
 
@@ -89,12 +101,22 @@ namespace GameScript.Scripts
 		
 		public void GuardInput(bool newGuardState)
 		{
-			attack = newGuardState;
+			guard = newGuardState;
+		}
+
+		public void CombatInput(bool newCombatState)
+		{
+			combat = newCombatState;
 		}
 
 		public void NonCombatInput(bool newNonCombatState)
 		{
 			noncombat = newNonCombatState;
+		}
+
+		public void DodgeInput(bool newDodgeState)
+		{
+			dodge = newDodgeState;
 		}
 
 		private void OnApplicationFocus(bool hasFocus)

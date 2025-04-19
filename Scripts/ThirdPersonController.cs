@@ -71,21 +71,20 @@ namespace GameScript.Scripts
         [Tooltip("For locking the camera position on all axis")]
         public bool lockCameraPosition;
 
+        private const float JumpGraceTime = 0.2f; // ジャンプ中にgrounded無視する時間
+        private const float JumpDelay = 0.133f; // 8フレーム ≒ 約0.13秒
+
         // cinemachine
         private float _cinemachineTargetYaw;
         private float _cinemachineTargetPitch;
 
-        // player
-        private float _speed;
-        private float _animationBlend;
-        private float _targetRotation;
-        private float _rotationVelocity;
-        private float _verticalVelocity;
-        private float _terminalVelocity = 53.0f;
+        private bool _jumpTriggered;
+        private float _jumpDelayTimer;
+        private float _jumpGraceTimer;
 
-        // timeout deltatime
-        private float _jumpTimeoutDelta;
-        private float _fallTimeoutDelta;
+        private float _verticalVelocity;
+        private const float TerminalVelocity = 53.0f;
+        
 
         // animation IDs
         private int _animIDSpeed;
@@ -94,6 +93,7 @@ namespace GameScript.Scripts
         private int _animIDFreeFall;
         private int _animIDMotionSpeed;
         private int _animIDCombat;
+        private int _animIDAttack;
 
 #if ENABLE_INPUT_SYSTEM
         private PlayerInput _playerInput;
@@ -108,6 +108,11 @@ namespace GameScript.Scripts
         private bool _hasAnimator;
         private bool _isCombat;
         private bool _isSprinting;
+
+        private MovementHandler _movementHandler;
+        private JumpHandler _jumpHandler;
+        private GuardHandler _guardHandler;
+        private AttackHandler _attackHandler;
 
         private bool IsCurrentDeviceMouse
         {
@@ -144,19 +149,26 @@ namespace GameScript.Scripts
 			Debug.LogError( "Starter Assets package is missing dependencies. Please use Tools/Starter Assets/Reinstall Dependencies to fix it");
 #endif
 
+            _movementHandler = new MovementHandler(_controller, _inputManager, transform, _mainCamera,
+                rotationSmoothTime, speedChangeRate, moveSpeed, sprintSpeed);
+            _jumpHandler = new JumpHandler(_inputManager, fallTimeout, JumpDelay, jumpHeight, gravity, JumpGraceTime,
+                jumpTimeout, TerminalVelocity);
+            _guardHandler = new GuardHandler(_inputManager);
+            _attackHandler = new AttackHandler(_inputManager);
+            
             AssignAnimationIDs();
-
-            // reset our timeouts on start
-            _jumpTimeoutDelta = jumpTimeout;
-            _fallTimeoutDelta = fallTimeout;
         }
 
         private void Update()
         {
             _hasAnimator = TryGetComponent(out _animator);
-            JumpAndGravity();
+            var verticalVelocity = _jumpHandler.UpdateJump(grounded,_animator,_hasAnimator);
             GroundedCheck();
-            Move();
+            var horizontalMove = _movementHandler.UpdateMovement(_animator, _hasAnimator);
+            _controller.Move(horizontalMove.normalized * (_movementHandler.Speed * Time.deltaTime) +
+                             new Vector3(0.0f, verticalVelocity, 0.0f) * Time.deltaTime);
+            _guardHandler.UpdateGuardState(_animator, _hasAnimator);
+            _attackHandler.UpdateAttackState(_animator, _hasAnimator);
             Combat();
         }
 
@@ -167,12 +179,16 @@ namespace GameScript.Scripts
 
         private void AssignAnimationIDs()
         {
-            _animIDSpeed = Animator.StringToHash("Speed");
+            _movementHandler.AnimIDSpeed = Animator.StringToHash("Speed");
             _animIDGrounded = Animator.StringToHash("Grounded");
-            _animIDJump = Animator.StringToHash("Jump");
-            _animIDFreeFall = Animator.StringToHash("FreeFall");
-            _animIDMotionSpeed = Animator.StringToHash("MotionSpeed");
+            _jumpHandler.AnimIDJump = Animator.StringToHash("Jump");
+            _jumpHandler.AnimIDFreeFall = Animator.StringToHash("FreeFall");
+            _movementHandler.AnimIDMotionSpeed = Animator.StringToHash("MotionSpeed");
             _animIDCombat = Animator.StringToHash("Combat");
+            _guardHandler.AnimIDGuard = Animator.StringToHash("Guard");
+            _attackHandler.AnimIDAttack = Animator.StringToHash("Attack");
+            _attackHandler.AnimIDCombat = Animator.StringToHash("Combat");
+            _animIDAttack = Animator.StringToHash("Attack");
         }
 
         private void GroundedCheck()
@@ -210,150 +226,7 @@ namespace GameScript.Scripts
             cinemachineCameraTarget.transform.rotation = Quaternion.Euler(_cinemachineTargetPitch + cameraAngleOverride,
                 _cinemachineTargetYaw, 0.0f);
         }
-
-        private void Move()
-        {
-            // set target speed based on move speed, sprint speed and if sprint is pressed
-            if (_inputManager.sprint)
-            {
-                _isSprinting = !_isSprinting;
-                _inputManager.sprint = false;
-            }
-
-            var targetSpeed = _isSprinting ? sprintSpeed : moveSpeed;
-
-            // a simplistic acceleration and deceleration designed to be easy to remove, replace, or iterate upon
-
-            // note: Vector2's == operator uses approximation so is not floating point error prone, and is cheaper than magnitude
-            // if there is no input, set the target speed to 0
-            if (_inputManager.move == Vector2.zero) targetSpeed = 0.0f;
-
-            // a reference to the players current horizontal velocity
-            float currentHorizontalSpeed = new Vector3(_controller.velocity.x, 0.0f, _controller.velocity.z).magnitude;
-
-            float speedOffset = 0.1f;
-            float inputMagnitude = _inputManager.analogMovement ? _inputManager.move.magnitude : 1f;
-
-            // accelerate or decelerate to target speed
-            if (currentHorizontalSpeed < targetSpeed - speedOffset ||
-                currentHorizontalSpeed > targetSpeed + speedOffset)
-            {
-                // creates curved result rather than a linear one giving a more organic speed change
-                // note T in Lerp is clamped, so we don't need to clamp our speed
-                _speed = Mathf.Lerp(currentHorizontalSpeed, targetSpeed * inputMagnitude,
-                    Time.deltaTime * speedChangeRate);
-
-                // round speed to 3 decimal places
-                _speed = Mathf.Round(_speed * 1000f) / 1000f;
-            }
-            else
-            {
-                _speed = targetSpeed;
-            }
-
-            _animationBlend = Mathf.Lerp(_animationBlend, targetSpeed, Time.deltaTime * speedChangeRate);
-            if (_animationBlend < 0.01f) _animationBlend = 0f;
-
-            // normalise input direction
-            Vector3 inputDirection = new Vector3(_inputManager.move.x, 0.0f, _inputManager.move.y).normalized;
-
-            // note: Vector2's != operator uses approximation so is not floating point error prone, and is cheaper than magnitude
-            // if there is a move input rotate player when the player is moving
-            if (_inputManager.move != Vector2.zero)
-            {
-                _targetRotation = Mathf.Atan2(inputDirection.x, inputDirection.z) * Mathf.Rad2Deg +
-                                  _mainCamera.transform.eulerAngles.y;
-                float rotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, _targetRotation, ref _rotationVelocity,
-                    rotationSmoothTime);
-
-                // rotate to face input direction relative to camera position
-                transform.rotation = Quaternion.Euler(0.0f, rotation, 0.0f);
-            }
-
-
-            Vector3 targetDirection = Quaternion.Euler(0.0f, _targetRotation, 0.0f) * Vector3.forward;
-
-            // move the player
-            _controller.Move(targetDirection.normalized * (_speed * Time.deltaTime) +
-                             new Vector3(0.0f, _verticalVelocity, 0.0f) * Time.deltaTime);
-
-            // update animator if using character
-            if (_hasAnimator)
-            {
-                _animator.SetFloat(_animIDSpeed, _animationBlend);
-                _animator.SetFloat(_animIDMotionSpeed, inputMagnitude);
-            }
-        }
-
-        private void JumpAndGravity()
-        {
-            if (grounded)
-            {
-                // reset the fall timeout timer
-                _fallTimeoutDelta = fallTimeout;
-
-                // update animator if using character
-                if (_hasAnimator)
-                {
-                    _animator.SetBool(_animIDJump, false);
-                    _animator.SetBool(_animIDFreeFall, false);
-                }
-
-                // stop our velocity dropping infinitely when grounded
-                if (_verticalVelocity < 0.0f)
-                {
-                    _verticalVelocity = -2f;
-                }
-
-                // Jump
-                if (_inputManager.jump && _jumpTimeoutDelta <= 0.0f)
-                {
-                    // the square root of H * -2 * G = how much velocity needed to reach desired height
-                    _verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
-
-                    // update animator if using character
-                    if (_hasAnimator)
-                    {
-                        _animator.SetBool(_animIDJump, true);
-                    }
-                }
-
-                // jump timeout
-                if (_jumpTimeoutDelta >= 0.0f)
-                {
-                    _jumpTimeoutDelta -= Time.deltaTime;
-                }
-            }
-            else
-            {
-                // reset the jump timeout timer
-                _jumpTimeoutDelta = jumpTimeout;
-
-                // fall timeout
-                if (_fallTimeoutDelta >= 0.0f)
-                {
-                    _fallTimeoutDelta -= Time.deltaTime;
-                }
-                else
-                {
-                    // update animator if using character
-                    if (_hasAnimator)
-                    {
-                        _animator.SetBool(_animIDFreeFall, true);
-                    }
-                }
-
-                // if we are not grounded, do not jump
-                _inputManager.jump = false;
-            }
-
-            // apply gravity over time if under terminal (multiply by delta time twice to linearly speed up over time)
-            if (_verticalVelocity < _terminalVelocity)
-            {
-                _verticalVelocity += gravity * Time.deltaTime;
-            }
-        }
-
+        
         private void Combat()
         {
             if (!_hasAnimator)
@@ -361,24 +234,25 @@ namespace GameScript.Scripts
                 return;
             }
 
-            if (_inputManager.attack)
+            if (_inputManager.combat)
             {
                 if (!_animator.GetBool(_animIDCombat))
                 {
                     _animator.SetBool(_animIDCombat, true);
+                    _animator.ResetTrigger(_animIDAttack);
+                    _inputManager.attack = false;
                     _inputManager.noncombat = false;
                 }
             }
-            
+
             if (_inputManager.noncombat)
             {
                 if (_animator.GetBool(_animIDCombat))
                 {
                     _animator.SetBool(_animIDCombat, false);
-                    _inputManager.attack = false;
+                    _inputManager.combat = false;
                 }
             }
-            
         }
 
         private static float ClampAngle(float lfAngle, float lfMin, float lfMax)
