@@ -113,6 +113,7 @@ namespace GameScript.Scripts
         private JumpHandler _jumpHandler;
         private GuardHandler _guardHandler;
         private AttackHandler _attackHandler;
+        private DodgeHandler _dodgeHandler;
 
         private bool IsCurrentDeviceMouse
         {
@@ -155,6 +156,7 @@ namespace GameScript.Scripts
                 jumpTimeout, TerminalVelocity);
             _guardHandler = new GuardHandler(_inputManager);
             _attackHandler = new AttackHandler(_inputManager);
+            _dodgeHandler = new DodgeHandler(_inputManager);
             
             AssignAnimationIDs();
         }
@@ -169,6 +171,7 @@ namespace GameScript.Scripts
                              new Vector3(0.0f, verticalVelocity, 0.0f) * Time.deltaTime);
             _guardHandler.UpdateGuardState(_animator, _hasAnimator);
             _attackHandler.UpdateAttackState(_animator, _hasAnimator);
+            _dodgeHandler.UpdateDodgeState(_animator, _hasAnimator);
             Combat();
         }
 
@@ -189,6 +192,7 @@ namespace GameScript.Scripts
             _attackHandler.AnimIDAttack = Animator.StringToHash("Attack");
             _attackHandler.AnimIDCombat = Animator.StringToHash("Combat");
             _animIDAttack = Animator.StringToHash("Attack");
+            _dodgeHandler.AnimIDDodge = Animator.StringToHash("Dodge");
         }
 
         private void GroundedCheck()
@@ -267,8 +271,7 @@ namespace GameScript.Scripts
             Color transparentGreen = new Color(0.0f, 1.0f, 0.0f, 0.35f);
             Color transparentRed = new Color(1.0f, 0.0f, 0.0f, 0.35f);
 
-            if (grounded) Gizmos.color = transparentGreen;
-            else Gizmos.color = transparentRed;
+            Gizmos.color = grounded ? transparentGreen : transparentRed;
 
             // when selected, draw a gizmo in the position of, and matching radius of, the grounded collider
             Gizmos.DrawSphere(
